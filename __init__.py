@@ -27,24 +27,24 @@ from PIL import Image, ImageDraw, ImageFont
 
 # ================= 1. 插件元数据 =================
 __plugin_meta__ = PluginMetadata(
-    name="Meme随机 (Final V40.7)",
-    description="全功能版：Mzk API通道、最近上传、风控修复",
+    name="Meme随机 (Final V40.9)",
+    description="本地存图版：最近上传修复、全局随机、纯文本帮助",
     usage=(
         "🤖 Mizuki Bot 表情包系统操作手册\n"
         "============================\n"
         "【基础指令】\n"
-        "• 表情帮助 / 表情列表\n"
+        "• 表情帮助 / meme帮助 / meme list\n"
         "• 发送 [文件夹名]\n"
+        "• 随机meme / 随一张\n"
         "• 查看 [图片名]\n"
         "• 看所有 [文件夹名]\n"
         "\n"
         "【上传系统】\n"
-        "• [文件夹] 上传 [图/ZIP] → Bot本地库\n"
-        "• [文件夹] pic上传 [图]  → Mzk API库\n"
+        "• [文件夹] 上传 [图/回复ZIP] → 存入Bot图库\n"
         "\n"
         "【管理员指令】\n"
         "• 最近上传         → 查看入库记录\n"
-        "• 删除 [图片名]    → 删图+删库\n"
+        "• 删除 [图片名]    → 删图并清除记录\n"
         "• 溯源 [图片名]    → 查上传者\n"
         "• 锁定/解锁 [文件夹]\n"
         "• 屏蔽群/解除屏蔽 [群号]"
@@ -58,6 +58,7 @@ __plugin_meta__ = PluginMetadata(
 driver = get_driver()
 config = driver.config
 
+# 这里的 getattr 就会自动去读取你的 .env.prod 文件中的对应字段
 MEME_DB_HOST = getattr(config, "meme_db_host", "127.0.0.1")
 MEME_DB_PORT = getattr(config, "meme_db_port", 3306)
 MEME_DB_USER = getattr(config, "meme_db_user", "root")
@@ -67,7 +68,8 @@ MEME_DB_DATABASE = getattr(config, "meme_db_database", "meme_db")
 try: SUPERUSERS = config.superusers
 except: SUPERUSERS = set()
 
-ADMIN_USERS = {3429630094, 3316413099, 2338680148}
+# 你现在可以在 .env 中添加 MEME_ADMIN_USERS=[3429630094, ...] 来覆盖默认值
+ADMIN_USERS = set(getattr(config, "meme_admin_users", [3429630094, 3316413099, 2338680148]))
 BANNED_WORDS = {"djb", "sb", "nm", "nmb"}
 
 PLUGIN_DIR = Path(__file__).parent.resolve()
@@ -77,13 +79,8 @@ RESTRICTED_FILE = PLUGIN_DIR / "restricted.json"
 BLACKLIST_FILE = PLUGIN_DIR / "blacklist.json"
 IMAGE_INFO_FILE = PLUGIN_DIR / "image_info.json"
 
-# === API 路径配置 ===
-API_ROOT_DIR = Path(r"D:\phpstudy_pro\WWW\mzk-api\picture\file")
-
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 PENDING_DIR.mkdir(parents=True, exist_ok=True)
-try: API_ROOT_DIR.mkdir(parents=True, exist_ok=True)
-except: pass
 
 USER_HISTORY = {}
 
@@ -308,7 +305,8 @@ def _sync_create_recent_list(recent_data: list) -> bytes:
     text_font = _get_font(20)
     small_font = _get_font(16)
     
-    draw.text((20, 20), "📊 最近上传记录 (Top 10)", fill="black", font=title_font)
+    # 彻底移除了 Emoji，防止出现方块乱码
+    draw.text((20, 20), "最近上传记录 (Top 10)", fill="black", font=title_font)
     
     y = 70
     for item in recent_data:
@@ -324,9 +322,8 @@ def _sync_create_recent_list(recent_data: list) -> bytes:
             except: pass
         
         if not image_loaded:
-             draw.text((30, y + 40), "❌ 缺失", fill="#ff5555", font=text_font)
+             draw.text((30, y + 40), "[图片缺失]", fill="#ff5555", font=text_font)
 
-        # 修复方块问题：使用文字标签代替Emoji
         draw.text((140, y + 15), f"[文件] {item['key']}", fill="black", font=text_font)
         draw.text((140, y + 45), f"[用户] {item['info']['nickname']} ({item['info']['uid']})", fill="#555555", font=text_font)
         draw.text((140, y + 75), f"[时间] {item['info']['time']}", fill="#999999", font=small_font)
@@ -361,7 +358,8 @@ def _sync_create_huge_grid(files: List[Path], folder_name: str) -> bytes:
     draw = ImageDraw.Draw(canvas)
     font = _get_font(20)
     title_font = _get_font(35)
-    draw.text((20, 20), f"📂 {folder_name} 预览{extra_info}", fill="black", font=title_font)
+    # 彻底移除了 Emoji，防止出现方块乱码
+    draw.text((20, 20), f"[{folder_name}] 分类预览{extra_info}", fill="black", font=title_font)
     
     for i, file_path in enumerate(target_files):
         x = (i % cols) * (thumb_w + gap) + gap
@@ -383,21 +381,23 @@ def _sync_create_huge_grid(files: List[Path], folder_name: str) -> bytes:
     canvas.save(buf, format='JPEG', quality=80)
     return buf.getvalue()
 
-async def save_image_logic(img_data: bytes, folder_name: str, target_dir: Path, user_id: int, is_api: bool, bot: Bot, force: bool = False):
+async def save_image_logic(img_data: bytes, folder_name: str, target_dir: Path, user_id: int, bot: Bot, force: bool = False):
     if not target_dir.exists(): target_dir.mkdir(parents=True, exist_ok=True)
     final_data, suffix = await detect_and_convert(img_data)
-    if not is_api and not force:
+    
+    if not force:
         h = hashlib.md5(final_data).hexdigest()
         for f in target_dir.iterdir():
             if f.is_file():
                 async with aiofiles.open(f, "rb") as fo: 
                     if hashlib.md5(await fo.read()).hexdigest() == h: return f.name, True
+                    
     new_name = mgr.get_next_filename(target_dir, folder_name, suffix)
     async with aiofiles.open(target_dir / new_name, "wb") as f: await f.write(final_data)
-    if not is_api:
-        try: nick = (await bot.get_stranger_info(user_id=user_id))['nickname']
-        except: nick = str(user_id)
-        db.add_record(folder_name, Path(new_name).name, user_id, nick)
+    
+    try: nick = (await bot.get_stranger_info(user_id=user_id))['nickname']
+    except: nick = str(user_id)
+    db.add_record(folder_name, Path(new_name).name, user_id, nick)
     return Path(new_name).stem, False
 
 # ================= 6. 自检系统 =================
@@ -452,7 +452,8 @@ async def startup_task():
 
 # ================= 7. 业务指令 =================
 
-help_cmd = on_regex(r"^(\u8868\u60c5\u5e2e\u52a9|memehelp)$", priority=5, block=True)
+# 加入了 meme帮助 的正则匹配
+help_cmd = on_regex(r"^(\u8868\u60c5\u5e2e\u52a9|memehelp|meme\u5e2e\u52a9)$", priority=5, block=True)
 @help_cmd.handle()
 async def _(event: Event):
     await help_cmd.finish(__plugin_meta__.usage)
@@ -492,6 +493,41 @@ async def _(bot: Bot, event: Event):
         await recent_cmd.send(MessageSegment.image(file=img))
     except Exception as e:
         await recent_cmd.finish(f"生成报表失败: {e}")
+
+random_cmd = on_regex(r"^(随机meme|随一张)$", priority=4, block=True)
+@random_cmd.handle()
+async def _(bot: Bot, event: Event):
+    if isinstance(event, GroupMessageEvent):
+        if mgr.is_group_blacklisted(event.group_id) and not mgr.is_admin(event.user_id): return
+    
+    allowed_files = []
+    for folder in IMAGE_DIR.iterdir():
+        if folder.is_dir() and mgr.check_permission(event.user_id, folder.name):
+            allowed_files.extend(get_sorted_files(folder))
+            
+    if not allowed_files:
+        await random_cmd.finish("⚠️ 当前图库为空或没有权限访问任何分类。")
+        
+    fail_count = 0; max_fails = 5
+    while fail_count < max_fails and allowed_files:
+        choice = random.choice(allowed_files)
+        try:
+            async with aiofiles.open(choice, "rb") as f:
+                img_bytes = await f.read()
+            await random_cmd.send(MessageSegment.image(file=img_bytes))
+            return
+        except ActionFailed as e:
+            if e.retcode in [34002, 1200, 89000, 10000]:
+                try: 
+                    choice.unlink()
+                    db.delete_record(choice.name)
+                    allowed_files.remove(choice)
+                except: pass
+            fail_count += 1
+        except Exception: 
+            fail_count += 1
+            
+    await random_cmd.finish("🚫 连续发送失败，请稍后再试。")
 
 async def is_meme_folder(event: Event) -> bool:
     text = event.get_plaintext().strip()
@@ -592,7 +628,7 @@ async def _(bot: Bot, event: Event, matcher: Matcher):
     try:
         data = await download_file(url)
         path = IMAGE_DIR / folder_name
-        name, is_dup = await save_image_logic(data, folder_name, path, event.user_id, False, bot, is_force)
+        name, is_dup = await save_image_logic(data, folder_name, path, event.user_id, bot, is_force)
         msg_to_send = "⚠️ 已存在" if is_dup else f"✅ 存入: {name}"
     except Exception as e: msg_to_send = f"失败: {e}"
     await upload_cmd.finish(msg_to_send)
@@ -608,7 +644,7 @@ async def process_zip(bot, url, folder, uid, event):
             for info in z.infolist():
                 if info.is_dir() or info.filename.startswith('.'): continue
                 if Path(info.filename).suffix.lower() not in ['.jpg','.png','.gif','.webp']: continue
-                await save_image_logic(z.read(info), folder, path, uid, False, bot)
+                await save_image_logic(z.read(info), folder, path, uid, bot)
                 count += 1
         msg = f"✅ ZIP完成: {folder} (+{count}张)"
         if isinstance(event, GroupMessageEvent): await bot.send_group_msg(group_id=event.group_id, message=msg)
@@ -675,23 +711,3 @@ async def _(event: Event, regex_group: tuple = RegexGroup()):
         if not mgr.check_permission(event.user_id, target.parent.name): return
         async with aiofiles.open(target, "rb") as f: await view_single.finish(MessageSegment.image(file=await f.read()))
     else: await view_single.finish("未找到")
-
-pic_upload = on_regex(r"^(\w+)\s*pic\u4e0a\u4f20$", priority=4, block=True)
-@pic_upload.handle()
-async def _(bot: Bot, event: Event, regex_group: tuple = RegexGroup()):
-    if not mgr.is_admin(event.user_id): return
-    url = None
-    if event.reply: 
-        for s in event.reply.message:
-             if s.type == "image": url = s.data.get("url"); break
-    elif event.message:
-        for s in event.message:
-             if s.type == "image": url = s.data.get("url"); break
-    if not url: await pic_upload.finish("需配图")
-    msg_to_send = ""
-    try:
-        data = await download_file(url)
-        name, _ = await save_image_logic(data, regex_group[0], API_ROOT_DIR, event.user_id, True, bot)
-        msg_to_send = f"API入库: {name}"
-    except Exception as e: msg_to_send = f"Error: {e}"
-    await pic_upload.finish(msg_to_send)
