@@ -1,6 +1,7 @@
-# Nonebot-plugin-maimeme
+# Mizuki-plugin-meme
+# 支持锁定文件夹、随一张、自主上传图片、可删除、溯源的插件
+## 目前支持接入本地数据库
 
-✨ 随机发送maimaiDX表情包插件 ✨
 
 ## 功能特性
 - 支持OneBot/QQ协议
