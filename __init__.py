@@ -14,7 +14,10 @@ from typing import Dict, List, Set, Optional
 
 import aiofiles
 import httpx
-import mysql.connector 
+try:
+    import mysql.connector
+except ModuleNotFoundError:
+    mysql = None
 from nonebot import get_driver, on_message, on_regex
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, MessageSegment
 from nonebot.exception import ActionFailed, NetworkError, FinishedException
@@ -92,6 +95,9 @@ class MemeDatabase:
         self._init_db()
 
     def connect(self):
+        if mysql is None:
+            logger.warning("[Meme DB] mysql.connector is not installed; database disabled.")
+            return
         try:
             self.conn = mysql.connector.connect(
                 host=MEME_DB_HOST,
